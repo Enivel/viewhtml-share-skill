@@ -17,6 +17,8 @@ description: 将本地单文件 HTML 发布为 ViewHTML 的预览链接，并管
 
 **不要猜，调 `GET /api/me`。** 带凭证时先调一次，读 `capabilities`：每项能力是 `true` 或 `false`，`upgrade.url` 是升级地址。要做的事对应的能力是 `false` 时，**不要硬试**：告诉用户「这是 Pro 功能」，给出 `upgrade.url`，问他要不要升级。
 
+带了凭证就一律用下面的 `POST /api/pages` 发布，不要用匿名那节的 `/api/jobs`（那是匿名通道，只用于没有凭证时）。
+
 没有凭证、但用户想要长期保留、更新、设密码等账号才有的能力时：告诉用户先在 viewhtml.app 登录，在控制台点「Create new page」里的「Copy prompt」，把得到的提示词交给你（里面带着凭证），再继续。
 
 ## 适用范围
@@ -48,7 +50,7 @@ curl --fail-with-body --silent --show-error \
 
 ## 账号操作（带 `vh_…` 凭证）
 
-所有请求都带 `Authorization: Bearer vh_…`，基址 `https://viewhtml.app`。凭证是用户的私有凭证：不要写进发布的页面、代码仓库或日志。
+所有请求都带 `Authorization: Bearer vh_…`。基址以提示词里的 `API:` 为准（线上是 `https://viewhtml.app`，本地或预览环境不同），下文的 `/api/…` 都接在它后面，不要自己写死域名。凭证是用户的私有凭证：不要写进发布的页面、代码仓库或日志。
 
 ### 查看自己的套餐和能力
 
@@ -62,7 +64,7 @@ curl --fail-with-body --silent --show-error \
 
 ### 发布、更新、查看
 
-- 新页面：`POST /api/pages`，请求体 `{"html": "…"}`，响应里的 `shareUrl` 就是要交付的链接。
+- 新页面：`POST /api/pages`，请求体 `{"html": "…"}`，响应里的 `shareUrl` 就是要交付的链接。`pageUrl` 是页面自己的地址（形如 `名字.viewhtml.app`，用户改过自选地址后以它为准）；用户没特别要求时交付 `shareUrl`，用户问「我的页面地址」或刚改过地址时给 `pageUrl`。
 - 更新页面：`POST /api/pages/{id}/versions`，请求体 `{"html": "…"}`，链接不变。内容和当前版本完全相同时不会新增版本（`changed: false`）。
 - 页面列表：`GET /api/pages`。页面详情和版本列表：`GET /api/pages/{id}`。
 - 删除页面：`DELETE /api/pages/{id}`，链接立即失效，所有版本一并删除，**不可恢复**，要先向用户确认。
@@ -119,17 +121,36 @@ curl --fail-with-body -X PUT "https://viewhtml.app/api/pages/$ID/assets/logo.png
 
 ### 表单和数据（Pro）
 
-让静态页面能收集表单、保存可改的内容：
+让静态页面能收集表单、显示可随时修改的内容、计数。所有接口都以 `/api/pages/{id}/data` 开头，免费账号一律返回 `402`，推荐升级 Pro。
 
-- 创建表：`POST /api/pages/{id}/data/collections`，`{"name": "signups", "kind": "form"}`（`kind` 也可以是 `counter`）。名字只能是小写字母、数字、`-`、`_`。
-- 页面里的表单加 `data-viewhtml-collection="signups"`，访客提交就会加一行，不需要写脚本。
-- 可改的内容：`PUT /api/pages/{id}/data/kv/{key}`，`{"value": …}`，页面里用 `viewhtml.kv.get("key")` 读取，改了不用重新发布。
-- 读取表格：`GET /api/pages/{id}/data/collections/{name}/records`，导出：`…/export.csv`。
-- 免费账号返回 `402`，推荐升级 Pro。
+**页面里怎么用**（发布后的页面会自动带上 SDK `window.viewhtml`，不用自己引入）：
+
+- 零代码表单：`<form data-viewhtml-collection="signups">`，访客提交就存进名为 `signups` 的表，页面会显示成功或失败提示。
+- 脚本写入：`viewhtml.collection("signups").add({...})`。
+- 可改的内容：`viewhtml.kv.get("price")` 读一项（没有返回 `null`），`viewhtml.kv.all()` 读全部。内容由你通过下面的接口修改，**改了不用重新发布**。
+- 计数器：`viewhtml.counter("likes").incr()` 加一，`.get()` 读取。
+- 所有方法返回 Promise，失败只会 reject，不会弄坏页面。
+
+**你（Agent）管理数据的接口：**
+
+| 做什么 | 接口 |
+| --- | --- |
+| 总览（所有键值、集合、用量） | `GET /data` |
+| 创建集合 | `POST /data/collections`，`{"name": "signups", "kind": "form"}`（`kind` 是 `form` 或 `counter`；名字只能是小写字母、数字、`-`、`_`，**要先创建，页面才能写入**） |
+| 删除集合（连同记录） | `DELETE /data/collections/{name}`，不可恢复，先问用户 |
+| 设置可改的内容 | `PUT /data/kv/{key}`，`{"value": …}`（单个值不超过 4 KB） |
+| 删除一项内容 | `DELETE /data/kv/{key}` |
+| 读记录 | `GET /data/collections/{name}/records?limit=50&before=时间`（按时间倒序，`limit` 最多 200；用上一页最后一条的 `createdAt` 作 `before` 翻页） |
+| 导出 CSV | `GET /data/collections/{name}/export.csv` |
+| 新增记录（只限 `form` 表） | `POST /data/collections/{name}/records`，`{"data": {…}}` |
+| 修改记录 | `PATCH /data/records/{recordId}`，`{"data": {…}}` |
+| 删除记录 | `DELETE /data/records/{recordId}`；批量 `POST /data/records/delete`，`{"ids": [...]}`（一次最多 100 个） |
+
+Pro 的上限：每页最多 10,000 条记录，数据总量 50 MB，每天最多写入 10,000 次。超出会报错，不要循环重试。
 
 ### PNG / PDF 导出（Pro）
 
-`POST /api/jobs`，`{"type": "image" 或 "pdf", "html": "…"}` 创建导出任务，用 `GET /api/jobs/{id}` 轮询，完成后从 `/api/jobs/{id}/result` 下载。免费账号和匿名都不能用，返回 `402`。
+`POST /api/jobs`，带上 `Authorization: Bearer vh_…`，请求体 `{"type": "image" 或 "pdf", "html": "…"}` 创建导出任务（返回 `202`），用 `GET /api/jobs/{id}` 轮询到 `status` 为 `succeeded`，再从 `/api/jobs/{id}/result` 下载文件。Pro 每天最多 100 次，超出返回 `429`；免费账号和匿名返回 `402`。凭证无效返回 `401`，不会退回匿名。
 
 ## 遇到 402 怎么办
 
